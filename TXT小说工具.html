@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小说文本工具 - 广告清洗 / 章节拆分</title>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --border:#e2e5ea; --text:#24292f; --muted:#8a919c;
+    --accent:#2563eb; --accent-soft:#e8effe; --danger:#dc2626; --keep:#eab308;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+  header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:17px;font-weight:600}
+  .container{max-width:1280px;margin:0 auto;padding:20px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px}
+  .drop{border:2px dashed var(--border);border-radius:10px;padding:34px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .drop b{color:var(--text)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  select,input[type=text]{padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:#fff;color:var(--text)}
+  button{padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:var(--text)}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{opacity:.9}
+  button.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .tabs{display:flex;gap:4px;margin-bottom:16px}
+  .tabs button{border-radius:8px 8px 0 0;border-bottom:none;padding:9px 22px;font-size:14px;background:transparent}
+  .tabs button.active{background:var(--card);color:var(--accent);border-color:var(--border);font-weight:600}
+  .stats{display:flex;gap:18px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+  .stats b{color:var(--text)}
+  textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical}
+  .split{display:grid;grid-template-columns:280px 1fr;gap:16px}
+  @media(max-width:900px){.split{grid-template-columns:1fr}}
+  .panes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:900px){.panes{grid-template-columns:1fr}}
+  .pane-h{font-size:13px;color:var(--muted);margin-bottom:6px}
+  .pane{height:460px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#fcfcfd;padding:12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-all}
+  mark.del{background:#fecaca;color:#991b1b;text-decoration:line-through;border-radius:2px;cursor:pointer;padding:0 1px}
+  mark.keep{background:#fef08a;color:#713f12;border-radius:2px;cursor:pointer;padding:0 1px}
+  .group{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
+  .group-h{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#fafbfc;cursor:pointer;user-select:none}
+  .group-h .cnt{margin-left:auto;color:var(--muted);font-size:12px}
+  .group-h .key{font-family:ui-monospace,monospace;background:var(--accent-soft);color:var(--accent);padding:1px 8px;border-radius:4px;font-size:12px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .group-b{display:none;border-top:1px solid var(--border);max-height:240px;overflow:auto}
+  .group.open .group-b{display:block}
+  .mrow{display:flex;gap:8px;align-items:flex-start;padding:6px 12px;border-bottom:1px solid #f0f1f4;font-size:12px}
+  .mrow:last-child{border-bottom:none}
+  .mrow .snip{font-family:ui-monospace,monospace;color:var(--muted);word-break:break-all;line-height:1.5}
+  .mrow .snip b{color:var(--danger);background:#fecaca;border-radius:2px;padding:0 1px}
+  .chap-list{max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+  .chap{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #f0f1f4;font-size:13px}
+  .chap:last-child{border-bottom:none}
+  .chap .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chap .n{color:var(--muted);font-size:12px;white-space:nowrap}
+  .chap button{padding:2px 10px;font-size:12px}
+  .hint{color:var(--muted);font-size:12px;line-height:1.6}
+  label.radio{display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer}
+  #toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#24292f;color:#fff;padding:9px 20px;border-radius:8px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;z-index:99}
+  .hidden{display:none!important}
+  .lib-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .lib-head span{font-size:13px;font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <h1>小说文本工具</h1>
+  <span class="hint">广告词清洗 · 章节识别拆分 · 纯本地处理，文件不上传</span>
+</header>
+<div class="container">
+
+  <!-- 文件加载 -->
+  <div class="card">
+    <div class="drop" id="drop">
+      <b>点击选择</b> 或拖拽文件到此处
+      <div class="hint" style="margin-top:6px">支持 TXT / MD / DOCX / EPUB / PDF，TXT 自动识别 UTF-8 / GBK 编码</div>
+      <input type="file" id="fileInput" accept=".txt,.md,.text,.docx,.epub,.pdf" class="hidden">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <span id="encWrap"><label class="hint">编码：
+        <select id="encoding">
+          <option value="auto">自动</option>
+          <option value="utf-8">UTF-8</option>
+          <option value="gbk">GBK</option>
+          <option value="gb18030">GB18030</option>
+          <option value="big5">Big5</option>
+        </select>
+      </label></span>
+      <button id="pasteBtn">粘贴文本</button>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div id="pasteBox" class="hidden" style="margin-top:10px">
+      <textarea id="pasteArea" rows="5" placeholder="把小说文本粘贴到这里…"></textarea>
+      <button class="primary" id="pasteOk" style="margin-top:8px">载入文本</button>
+    </div>
+  </div>
+
+  <div id="workspace" class="hidden">
+    <div class="tabs">
+      <button class="active" data-tab="ads">广告词清洗</button>
+      <button data-tab="chap">章节拆分</button>
+    </div>
+
+    <!-- 广告清洗 -->
+    <div id="tab-ads">
+      <div class="split">
+        <div>
+          <div class="card">
+            <div class="lib-head"><span>广告词库（每行一条）</span><button id="resetLib" style="font-size:12px;padding:2px 10px">恢复默认</button></div>
+            <textarea id="adLib" rows="10"></textarea>
+            <p class="hint" style="margin-top:6px">普通文本按字面匹配；以 <b>re:</b> 开头按正则匹配，如 <b>re:^.*手机阅读.*$</b></p>
+            <button class="primary" id="scanBtn" style="margin-top:10px;width:100%">扫描广告词</button>
+          </div>
+          <div class="card" id="matchCard" style="display:none">
+            <div class="lib-head"><span>匹配结果（勾选 = 删除）</span></div>
+            <div id="matchGroups"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="panes">
+            <div>
+              <div class="pane-h">原文</div>
+              <div class="pane" id="paneLeft"></div>
+            </div>
+            <div>
+              <div class="pane-h">高亮预览（<span style="color:#991b1b">红色删除线</span> = 将删除，<span style="color:#713f12">黄色</span> = 保留，点击高亮可切换）</div>
+              <div class="pane" id="paneRight"></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <label class="radio"><input type="radio" name="scope" value="line" checked> 删除匹配所在的整行</label>
+            <label class="radio"><input type="radio" name="scope" value="word"> 仅删除匹配文本</label>
+            <label class="radio"><input type="checkbox" id="mergeBlank" checked> 删除后合并多余空行</label>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="danger" id="applyBtn" disabled>应用删除</button>
+            <button id="dlCleanBtn">下载清洗后 TXT</button>
+            <span class="hint" id="selInfo"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 章节拆分 -->
+    <div id="tab-chap" class="hidden">
+      <div class="card">
+        <div class="row">
+          <label class="hint">章节标题正则：</label>
+          <input type="text" id="chapRe" style="flex:1;min-width:280px;font-family:ui-monospace,monospace">
+          <button class="primary" id="parseBtn">识别章节</button>
+        </div>
+        <p class="hint" style="margin-top:8px">默认匹配「第X章 / 第X回 / 第X卷」等开头独占一行的标题；可按需修改。正则作用于每一行。</p>
+      </div>
+      <div class="card" id="chapCard" style="display:none">
+        <div class="row" style="margin-bottom:12px">
+          <b id="chapCount"></b>
+          <button class="primary" id="zipBtn">打包下载 ZIP</button>
+          <span class="hint" id="zipHint"></span>
+        </div>
+        <div class="chap-list" id="chapList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { file: null, fileName: "", text: "", matches: [], chapters: [] };
+
+/* ---------- 默认广告词库 ---------- */
+const DEFAULT_LIB = `本书首发
+请记住本书首发域名
+请记住本书域名
+手机用户请浏览
+手机阅读
+无弹窗
+最新章节列表
+天才一秒记住
+一秒记住
+顶点小说
+笔趣阁
+全文字手打
+更新最快
+看更多好书请搜
+完本小说网
+txt下载
+全本txt下载
+re:^.*请(?:记住|收藏).*(?:域名|网址|本站).*$
+re:^.*(?:最新章节|全文阅读).*(?:请到|请访问|尽在).*$
+re:^\\s*wap\\.[^\\n]*$
+re:^\\s*(?:https?|www)[^\\n]*$`;
+if (!localStorage.adLib) localStorage.adLib = DEFAULT_LIB;
+$("adLib").value = localStorage.adLib;
+$("resetLib").onclick = () => { $("adLib").value = DEFAULT_LIB; toast("已恢复默认词库"); };
+$("adLib").oninput = () => localStorage.adLib = $("adLib").value;
+
+const DEFAULT_RE = "^\\s*第[0-9０-９零一二三四五六七八九十百千两]+[章节回卷集部][^\\n]{0,60}$";
+if (!localStorage.chapRe) localStorage.chapRe = DEFAULT_RE;
+$("chapRe").value = localStorage.chapRe;
+$("chapRe").oninput = () => localStorage.chapRe = $("chapRe").value;
+
+/* ---------- 工具 ---------- */
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.style.opacity=1; clearTimeout(t._t); t._t=setTimeout(()=>t.style.opacity=0,2200); }
+function escapeHtml(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); }
+function safeName(s){ return s.replace(/[\\/:*?"<>|\r\n]+/g,"").trim().slice(0,60) || "未命名"; }
+function download(name, content){
+  const blob = content instanceof Blob ? content : new Blob(["\ufeff"+content], {type:"text/plain;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+
+/* ---------- 文件读取 ---------- */
+$("drop").onclick = () => $("fileInput").click();
+$("drop").ondragover = e => { e.preventDefault(); $("drop").classList.add("over"); };
+$("drop").ondragleave = () => $("drop").classList.remove("over");
+$("drop").ondrop = e => { e.preventDefault(); $("drop").classList.remove("over"); if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); };
+$("fileInput").onchange = e => { if(e.target.files[0]) loadFile(e.target.files[0]); };
+$("encoding").onchange = () => { if(state.file) loadFile(state.file); };
+$("pasteBtn").onclick = () => $("pasteBox").classList.toggle("hidden");
+$("pasteOk").onclick = () => {
+  const t = $("pasteArea").value;
+  if(!t.trim()) return toast("内容为空");
+  state.file = null; state.fileName = "粘贴文本.txt"; setText(t);
+};
+
+async function loadFile(file){
+  state.file = file; state.fileName = file.name;
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  $("encWrap").style.display = ["txt","md","text"].includes(ext) ? "" : "none";
+  const buf = await file.arrayBuffer();
+  try {
+    let text;
+    if(ext === "docx"){ toast("正在解析 DOCX…"); text = await readDocx(buf); }
+    else if(ext === "epub"){ toast("正在解析 EPUB…"); text = await readEpub(buf); }
+    else if(ext === "pdf"){ toast("正在解析 PDF…"); text = await readPdf(buf); }
+    else { text = readTxt(buf); }
+    if(!text || !text.trim()) return toast("未提取到文本内容");
+    setText(text);
+  } catch(e){
+    console.error(e);
+    toast("解析失败：" + (e.message || e));
+  }
+}
+
+function readTxt(buf){
+  const enc = $("encoding").value;
+  if(enc === "auto"){
+    for(const e of ["utf-8","gb18030"]){
+      try { return new TextDecoder(e,{fatal:true}).decode(buf); } catch(_){}
+    }
+    return new TextDecoder("utf-8").decode(buf);
+  }
+  try { return new TextDecoder(enc).decode(buf); }
+  catch(_){ toast("编码不支持，已按 UTF-8 读取"); return new TextDecoder("utf-8").decode(buf); }
+}
+
+/* DOCX：mammoth 提取纯文本（保留段落换行） */
+async function readDocx(buf){
+  if(typeof mammoth === "undefined") throw new Error("DOCX 解析库未加载（需联网）");
+  const res = await mammoth.extractRawText({ arrayBuffer: buf });
+  return res.value;
+}
+
+/* EPUB：本质是 ZIP，按 spine 顺序读取各 XHTML 并去标签 */
+async function readEpub(buf){
+  if(typeof JSZip === "undefined") throw new Error("EPUB 解析依赖 JSZip（需联网）");
+  const zip = await JSZip.loadAsync(buf);
+  const containerFile = zip.file("META-INF/container.xml");
+  if(!containerFile) throw new Error("不是有效的 EPUB 文件");
+  const cdoc = new DOMParser().parseFromString(await containerFile.async("text"), "application/xml");
+  const rootfile = cdoc.querySelector("rootfile");
+  if(!rootfile) throw new Error("找不到 EPUB 内容清单");
+  const opfPath = rootfile.getAttribute("full-path");
+  const opf = await zip.file(opfPath).async("text");
+  const odoc = new DOMParser().parseFromString(opf, "application/xml");
+  const base = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+  const manifest = {};
+  odoc.querySelectorAll("manifest item").forEach(it => manifest[it.getAttribute("id")] = it.getAttribute("href"));
+  const parts = [];
+  for(const ir of odoc.querySelectorAll("spine itemref")){
+    const href = manifest[ir.getAttribute("idref")];
+    if(!href) continue;
+    const f = zip.file(base + href) || zip.file(decodeURIComponent(base + href));
+    if(!f) continue;
+    let html = await f.async("text");
+    /* 块级标签转换行，避免段落粘连 */
+    html = html.replace(/<\/(p|div|h[1-6]|li|tr|section|article)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n");
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const text = (doc.body ? doc.body.textContent : "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if(text) parts.push(text);
+  }
+  return parts.join("\n\n");
+}
+
+/* PDF：pdf.js 逐页提取（扫描版 PDF 无文字层，提取不到内容） */
+if(typeof pdfjsLib !== "undefined"){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+}
+async function readPdf(buf){
+  if(typeof pdfjsLib === "undefined") throw new Error("PDF 解析库未加载（需联网）");
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const parts = [];
+  for(let i = 1; i <= pdf.numPages; i++){
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    let s = "";
+    for(const it of tc.items){ s += it.str; if(it.hasEOL) s += "\n"; }
+    parts.push(s);
+  }
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function setText(text){
+  state.text = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  state.matches = []; state.chapters = [];
+  $("workspace").classList.remove("hidden");
+  $("matchCard").style.display = "none";
+  $("chapCard").style.display = "none";
+  $("applyBtn").disabled = true;
+  $("selInfo").textContent = "";
+  updateStats(); renderPanes();
+  toast("已载入：" + state.fileName);
+}
+
+function updateStats(){
+  const t = state.text;
+  const lines = t ? t.split("\n").length : 0;
+  $("stats").innerHTML = t
+    ? `<span>文件：<b>${escapeHtml(state.fileName)}</b></span><span>字符数：<b>${t.length.toLocaleString()}</b></span><span>行数：<b>${lines.toLocaleString()}</b></span>`
+    : "";
+}
+
+/* ---------- Tab 切换 ---------- */
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $("tab-ads").classList.toggle("hidden", b.dataset.tab !== "ads");
+  $("tab-chap").classList.toggle("hidden", b.dataset.tab !== "chap");
+});
+
+/* ---------- 广告扫描 ---------- */
+$("scanBtn").onclick = () => {
+  if(!state.text) return;
+  const lib = $("adLib").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  let matches = [];
+  for(const item of lib){
+    let re;
+    try { re = item.startsWith("re:") ? new RegExp(item.slice(3), "gm") : new RegExp(escapeRegExp(item), "g"); }
+    catch(_){ continue; }
+    let m, guard = 0;
+    while((m = re.exec(state.text)) && guard++ < 50000){
+      if(m[0].length === 0){ re.lastIndex++; continue; }
+      matches.push({ start:m.index, end:m.index + m[0].length, key:item, selected:true });
+    }
+  }
+  matches.sort((a,b)=> a.start - b.start || b.end - a.end);
+  const filtered = []; let lastEnd = -1;
+  for(const m of matches){ if(m.start >= lastEnd){ filtered.push(m); lastEnd = m.end; } }
+  state.matches = filtered;
+  renderMatches(); renderPanes();
+  $("matchCard").style.display = filtered.length ? "block" : "none";
+  $("applyBtn").disabled = !filtered.length;
+  toast(filtered.length ? `共匹配 ${filtered.length} 处` : "未匹配到广告词");
+};
+
+function groupMatches(){
+  const map = new Map();
+  state.matches.forEach((m,i)=>{
+    if(!map.has(m.key)) map.set(m.key, []);
+    map.get(m.key).push({...m, idx:i});
+  });
+  return map;
+}
+
+function snippet(m){
+  const t = state.text;
+  let s = t.lastIndexOf("\n", m.start - 1) + 1;
+  let e = t.indexOf("\n", m.end); if(e === -1) e = t.length;
+  let line = t.slice(s, e);
+  const off = m.start - s;
+  if(line.length > 110){
+    const from = Math.max(0, off - 40);
+    line = (from>0?"…":"") + line.slice(from, from + 110) + (from+110<line.length?"…":"");
+    const noff = off - from + (from>0?1:0);
+    return escapeHtml(line.slice(0,noff)) + "<b>" + escapeHtml(line.slice(noff, noff + (m.end-m.start))) + "</b>" + escapeHtml(line.slice(noff + (m.end-m.start)));
+  }
+  return escapeHtml(line.slice(0,off)) + "<b>" + escapeHtml(line.slice(off, off + (m.end-m.start))) + "</b>" + escapeHtml(line.slice(off + (m.end-m.start)));
+}
+
+function renderMatches(){
+  const box = $("matchGroups"); box.innerHTML = "";
+  const groups = groupMatches();
+  groups.forEach((list, key) => {
+    const g = document.createElement("div"); g.className = "group";
+    const allSel = list.every(m => state.matches[m.idx].selected);
+    const h = document.createElement("div"); h.className = "group-h";
+    h.innerHTML = `<input type="checkbox" ${allSel?"checked":""}>
+      <span class="key" title="${escapeHtml(key)}">${escapeHtml(key)}</span>
+      <span class="cnt">${list.length} 处 ▸</span>`;
+    const body = document.createElement("div"); body.className = "group-b";
+    list.slice(0, 200).forEach(m => {
+      const r = document.createElement("div"); r.className = "mrow";
+      r.innerHTML = `<input type="checkbox" ${state.matches[m.idx].selected?"checked":""}><span class="snip">${snippet(m)}</span>`;
+      r.querySelector("input").onchange = e => { e.stopPropagation(); state.matches[m.idx].selected = e.target.checked; syncSel(); renderPanes(); };
+      r.onclick = e => { if(e.target.tagName!=="INPUT"){ const c=r.querySelector("input"); c.checked=!c.checked; state.matches[m.idx].selected=c.checked; syncSel(); renderPanes(); } };
+      body.appendChild(r);
+    });
+    if(list.length > 200){
+      const more = document.createElement("div"); more.className = "mrow";
+      more.innerHTML = `<span class="snip">…其余 ${list.length-200} 条用上方分组勾选框统一控制</span>`;
+      body.appendChild(more);
+    }
+    h.querySelector("input").onchange = e => {
+      e.stopPropagation();
+      list.forEach(m => state.matches[m.idx].selected = e.target.checked);
+      renderMatches(); renderPanes();
+    };
+    h.onclick = e => { if(e.target.tagName!=="INPUT") g.classList.toggle("open"); };
+    g.appendChild(h); g.appendChild(body); box.appendChild(g);
+  });
+  syncSel();
+}
+
+function syncSel(){
+  const n = state.matches.filter(m=>m.selected).length;
+  $("selInfo").textContent = state.matches.length ? `将删除 ${n} / ${state.matches.length} 处` : "";
+}
+
+/* ---------- 双栏渲染 ---------- */
+$("paneLeft").textContent = "";
+function renderPanes(){
+  $("paneLeft").textContent = state.text;
+  const t = state.text;
+  let html = "", pos = 0;
+  state.matches.forEach((m,i) => {
+    html += escapeHtml(t.slice(pos, m.start));
+    html += `<mark class="${m.selected?"del":"keep"}" data-i="${i}">${escapeHtml(t.slice(m.start, m.end))}</mark>`;
+    pos = m.end;
+  });
+  html += escapeHtml(t.slice(pos));
+  $("paneRight").innerHTML = html;
+}
+$("paneRight").onclick = e => {
+  const mk = e.target.closest("mark"); if(!mk) return;
+  const m = state.matches[+mk.dataset.i];
+  m.selected = !m.selected;
+  mk.className = m.selected ? "del" : "keep";
+  renderMatches();
+};
+/* 滚动同步 */
+let syncing = false;
+[["paneLeft","paneRight"],["paneRight","paneLeft"]].forEach(([a,b]) => {
+  $(a).onscroll = () => {
+    if(syncing) return; syncing = true;
+    const elA = $(a), elB = $(b);
+    elB.scrollTop = elA.scrollTop * (elB.scrollHeight - elB.clientHeight) / Math.max(1,(elA.scrollHeight - elA.clientHeight));
+    requestAnimationFrame(()=> syncing = false);
+  };
+});
+
+/* ---------- 应用删除 ---------- */
+$("applyBtn").onclick = () => {
+  const scope = document.querySelector("input[name=scope]:checked").value;
+  const t = state.text;
+  let ranges = state.matches.filter(m=>m.selected).map(m => {
+    if(scope === "line"){
+      const s = t.lastIndexOf("\n", m.start - 1) + 1;
+      let e = t.indexOf("\n", m.end); e = e === -1 ? t.length : e + 1;
+      return {start:s, end:e};
+    }
+    return {start:m.start, end:m.end};
+  }).sort((a,b)=>a.start-b.start);
+  const merged = [];
+  for(const r of ranges){
+    if(merged.length && r.start <= merged[merged.length-1].end) merged[merged.length-1].end = Math.max(merged[merged.length-1].end, r.end);
+    else merged.push({...r});
+  }
+  let out = "", pos = 0;
+  for(const r of merged){ out += t.slice(pos, r.start); pos = r.end; }
+  out += t.slice(pos);
+  if($("mergeBlank").checked) out = out.replace(/\n{3,}/g, "\n\n");
+  const removed = t.length - out.length;
+  state.text = out; state.matches = [];
+  $("matchCard").style.display = "none";
+  $("applyBtn").disabled = true; $("selInfo").textContent = "";
+  updateStats(); renderPanes();
+  toast(`已删除，共清除 ${removed.toLocaleString()} 个字符`);
+};
+
+$("dlCleanBtn").onclick = () => {
+  if(!state.text) return;
+  download(safeName(state.fileName.replace(/\.(txt|md|text|docx|epub|pdf)$/i,"")) + "_清洗版.txt", state.text);
+};
+
+/* ---------- 章节识别 ---------- */
+$("parseBtn").onclick = () => {
+  if(!state.text) return;
+  let re;
+  try { re = new RegExp($("chapRe").value, "gm"); }
+  catch(e){ return toast("正则表达式有误：" + e.message); }
+  const t = state.text;
+  const heads = [];
+  let m, guard = 0;
+  while((m = re.exec(t)) && guard++ < 50000){
+    if(m[0].length === 0){ re.lastIndex++; continue; }
+    heads.push({ start:m.index, title:m[0].trim() });
+  }
+  const chapters = [];
+  if(heads.length && heads[0].start > 0 && t.slice(0, heads[0].start).trim()){
+    chapters.push({ title:"卷首内容", text:t.slice(0, heads[0].start) });
+  }
+  heads.forEach((h,i) => {
+    const end = i + 1 < heads.length ? heads[i+1].start : t.length;
+    chapters.push({ title:h.title, text:t.slice(h.start, end) });
+  });
+  state.chapters = chapters;
+  renderChapters();
+  toast(chapters.length ? `识别到 ${chapters.length} 个章节` : "未识别到章节，请调整正则");
+};
+
+function renderChapters(){
+  const list = $("chapList"); list.innerHTML = "";
+  $("chapCard").style.display = state.chapters.length ? "block" : "none";
+  $("chapCount").textContent = `共 ${state.chapters.length} 章`;
+  $("zipHint").textContent = typeof JSZip === "undefined" ? "（JSZip 未加载成功，仅支持单章下载）" : "";
+  state.chapters.forEach((c,i) => {
+    const d = document.createElement("div"); d.className = "chap";
+    d.innerHTML = `<span class="t">${i+1}. ${escapeHtml(c.title)}</span><span class="n">${c.text.length.toLocaleString()} 字</span>`;
+    const btn = document.createElement("button"); btn.textContent = "下载";
+    btn.onclick = () => download(chapFileName(c,i), c.text);
+    d.appendChild(btn); list.appendChild(d);
+  });
+}
+
+function chapFileName(c,i){
+  return String(i+1).padStart(4,"0") + "_" + safeName(c.title) + ".txt";
+}
+
+$("zipBtn").onclick = async () => {
+  if(!state.chapters.length) return;
+  if(typeof JSZip === "undefined") return toast("JSZip 未加载（需联网），请逐章下载");
+  const zip = new JSZip();
+  state.chapters.forEach((c,i) => zip.file(chapFileName(c,i), c.text));
+  const blob = await zip.generateAsync({type:"blob"});
+  download(safeName(state.fileName.replace(/\.(txt|md|text|docx|epub|pdf)$/i,"")) + "_分章.zip", blob);
+  toast("ZIP 已生成");
+};
+</script>
+</body>
+</html>
